@@ -1,4 +1,4 @@
-name: RustDesk Nightly Build
+name: RustDesk Multi-version Build
 
 on:
   workflow_dispatch:
@@ -6,57 +6,90 @@ on:
 env:
   RUST_VERSION: "1.75"
   CARGO_NDK_VERSION: "3.1.2"
-  LLVM_VERSION: "15.0.6"
-  FLUTTER_VERSION: "3.22.2"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
   TAG_NAME: "nightly"
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VERSION: "1.4.2"
-  NDK_VERSION: "r26d"
-  # 服务器配置 - 按照您的要求写死
+  # 写死的服务器配置
   RS_PUB_KEY: "iQX+6aUbS40CL9jJElm4jSMs8aKzePqMsFH1HACDI5E="
   RENDEZVOUS_SERVER: "nas.haydenstudio.hk"
   API_SERVER: "http://nas.haydenstudio.hk:21114"
-  # 签名密钥（可选）
-  ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
 
 jobs:
-  build-macos:
-    name: Build macOS x86_64
+  build-macos-matrix:
+    name: Build macOS - ${{ matrix.job.flutter }} (${{ matrix.job.ref }})
     runs-on: macos-13
     permissions:
       contents: write
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - {
+              target: x86_64-apple-darwin,
+              arch: x86_64,
+              flutter: "3.13.9",
+              ref: "f6509e3fd6917aa976bad2fc684182601ebf2434",
+              bridge: "1.80.1",
+              date: "20231219"
+            }
+          - {
+              target: x86_64-apple-darwin,
+              arch: x86_64,
+              flutter: "3.10.6", 
+              ref: "f6509e3fd6917aa976bad2fc684182601ebf2434",
+              bridge: "1.80.1",
+              date: "20231219"
+            }
+          - {
+              target: x86_64-apple-darwin,
+              arch: x86_64,
+              flutter: "3.10.6",
+              ref: "85ddfc0739f052cab0029c46b899b959ee94eeb8",
+              bridge: "1.80.1",
+              date: "20231119"
+            }
+          - {
+              target: x86_64-apple-darwin,
+              arch: x86_64,
+              flutter: "3.13.9",
+              ref: "85ddfc0739f052cab0029c46b899b959ee94eeb8",
+              bridge: "1.80.1",
+              date: "20231119"
+            }
+
     steps:
-      - name: Checkout source code
+      - name: Checkout source code (Ref: ${{ matrix.job.ref }})
         uses: actions/checkout@v3
         with:
+          ref: ${{ matrix.job.ref }}
           submodules: recursive
 
       - name: Install build dependencies
         run: |
           brew install llvm create-dmg nasm pkg-config
 
-      - name: Install Flutter
+      - name: Install Flutter ${{ matrix.job.flutter }}
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
-          flutter-version: "3.13.9"
+          flutter-version: ${{ matrix.job.flutter }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: x86_64-apple-darwin
+          targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "${{ matrix.job.os }}-${{ matrix.job.flutter }}"
 
       - name: Setup Flutter Rust Bridge
         run: |
-          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ matrix.job.bridge }} --features "uuid" --locked
           pushd flutter && flutter pub get && popd
           ~/.cargo/bin/flutter_rust_bridge_codegen \
             --rust-input ./src/flutter_ffi.rs \
@@ -90,7 +123,7 @@ jobs:
             --hide-extension "RustDesk.app" \
             --window-size 800 400 \
             --app-drop-link 600 185 \
-            rustdesk-${{ env.VERSION }}-x86_64-unsigned.dmg \
+            "rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-flutter${{ matrix.job.flutter }}-${{ matrix.job.date }}-unsigned.dmg" \
             ./flutter/build/macos/Build/Products/Release/RustDesk.app
 
       - name: Upload unsigned DMG
@@ -98,110 +131,4 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          files: rustdesk-${{ env.VERSION }}-x86_64-unsigned.dmg
-
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang cmake curl git g++ \
-            libclang-dev llvm-dev nasm ninja-build \
-            openjdk-11-jdk-headless pkg-config wget
-
-      - name: Install Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: "rustfmt"
-
-      - name: Setup Flutter Rust Bridge
-        run: |
-          git config --global core.longpaths true
-          cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
-          sed -i 's/uni_links_desktop/#uni_links_desktop/g' flutter/pubspec.yaml
-          pushd flutter/lib
-          find . -name "*.dart" -exec sed -i 's/textScaler: TextScaler.linear(\(.*\)),/textScaleFactor: \1,/g' {} \;
-          popd
-          pushd flutter && flutter pub get && popd
-          ~/.cargo/bin/flutter_rust_bridge_codegen \
-            --rust-input ./src/flutter_ffi.rs \
-            --dart-output ./flutter/lib/generated_bridge.dart
-
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-          add-to-path: true
-
-      - name: Build Android dependencies
-        run: |
-          ./flutter/build_android_deps.sh arm64-v8a
-
-      - name: Build Rust library for Android
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-          RS_PUB_KEY: ${{ env.RS_PUB_KEY }}
-          RENDEZVOUS_SERVER: ${{ env.RENDEZVOUS_SERVER }}
-          API_SERVER: ${{ env.API_SERVER }}
-        run: |
-          rustup target add aarch64-linux-android
-          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
-          ./flutter/ndk_arm64.sh
-          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
-          cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
-             ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
-
-      - name: Build Android APK
-        env:
-          JAVA_HOME: /usr/lib/jvm/java-11-openjdk-amd64
-        run: |
-          export PATH=/usr/lib/jvm/java-11-openjdk-amd64/bin:$PATH
-          # 使用调试签名配置
-          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-          
-          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
-          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so \
-             ./flutter/android/app/src/main/jniLibs/arm64-v8a/
-          
-          pushd flutter
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-             ../rustdesk-${{ env.VERSION }}-arm64.apk
-          popd
-
-      - name: Sign APK (可选)
-        if: env.ANDROID_SIGNING_KEY != null
-        uses: r0adkll/sign-android-release@v1
-        with:
-          releaseDirectory: ./
-          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
-          alias: ${{ secrets.ANDROID_ALIAS }}
-          keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
-      - name: Upload Android APK
-        uses: softprops/action-gh-release@v1
-        with:
-          prerelease: true
-          tag_name: ${{ env.TAG_NAME }}
-          files: rustdesk-${{ env.VERSION }}-arm64.apk
+          files: "rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-flutter${{ matrix.job.flutter }}-${{ matrix.job.date }}-unsigned.dmg"
